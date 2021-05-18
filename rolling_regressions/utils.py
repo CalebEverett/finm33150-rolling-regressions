@@ -187,6 +187,7 @@ def download_s3_file(filename: str):
 # =============================================================================
 
 def get_betas(df_cov: pd.DataFrame, times: List, nobs_oos: int = 5) -> pd.DataFame:
+    col_list = []
     
 
 

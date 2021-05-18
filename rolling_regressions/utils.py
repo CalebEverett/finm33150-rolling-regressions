@@ -181,6 +181,19 @@ def download_s3_file(filename: str):
     client.download_file("finm33150", filename, filename)
 
 
+
+# =============================================================================
+# Data Preparation
+# =============================================================================
+
+def get_betas(df_cov: pd.DataFrame, times: List, nobs_oos: int = 5) -> pd.DataFame:
+    
+
+
+
+
+
+
 # =============================================================================
 # Strategy
 # =============================================================================
@@ -333,7 +346,7 @@ def get_results_df(df: pd.DataFrame, params: Dict, nobs: int = 100) -> pd.DataFr
 # Charts
 # =============================================================================
 
-COLORS = colors.qualitative.T10
+COLORS = colors.qualitative.D3
 
 IS_labels = [
     ("obs", lambda x: f"{x:>7d}"),

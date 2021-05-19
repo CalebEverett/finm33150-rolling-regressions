@@ -10,6 +10,7 @@ from canvasapi import Canvas
 import numpy as np
 import numpy as np
 import pandas as pd
+import plotly.express as px
 import plotly.graph_objects as go
 from plotly import colors
 from plotly.subplots import make_subplots
@@ -181,18 +182,53 @@ def download_s3_file(filename: str):
     client.download_file("finm33150", filename, filename)
 
 
-
 # =============================================================================
 # Data Preparation
 # =============================================================================
 
-def get_betas(df_cov: pd.DataFrame, times: List, nobs_oos: int = 5) -> pd.DataFame:
+
+def get_betas(df_ret: pd.DataFrame, times: List, nobs_oos: int = 6) -> pd.DataFrame:
+    """
+    Takes dataframe of returns by date by ticker and returns dataframe of coefficients
+    calculated from exponentially weighted moving average, boxcar and forward boxcar
+    windows. EWN averages are based on alphas as 1/t. Boxcar windows are based on 2 * t.
+    Forward boxcar windows are for the next `nobs_oos` observations and the same value is
+    returned under each time heading to facilitate comparisons.
+    """
+
+    nobs_oos = 5
     col_list = []
-    
+    for t in tqdm(times):
+        for s in df_ret.columns[:-1]:
+            df_pair = df_ret.loc[:, [s, "SPY"]]
+            for win_type, df_cov in {
+                "exp_wm": df_pair.ewm(alpha=1 / t).cov(),
+                "boxcar": df_pair.rolling(window=2 * t).cov(),
+                "boxcar_fwd": df_pair.rolling(window=nobs_oos)
+                .cov()
+                .groupby("ticker")
+                .shift(-nobs_oos),
+            }.items():
+                s_var = df_cov[s].xs(s, level=1)
+                s_var.name = ("var_x", win_type, f"t_{t:02d}", s)
 
+                s_cov = df_cov[s].xs("SPY", level=1)
+                s_cov.name = ("cov_xy", win_type, f"t_{t:02d}", s)
 
+                col_list.extend([s_var, s_cov])
 
+    df_vars = pd.concat(col_list, axis=1)
+    df_vars.columns.names = ["stat", "win_type", "time", "ticker"]
+    df_vars = df_vars.stack("ticker")
+    df_beta = df_vars["cov_xy"].divide(df_vars["var_x"])
+    df_beta.columns = pd.MultiIndex.from_tuples(
+        [("beta_1", *c) for c in df_beta.columns], names=["stat", "win_type", "time"]
+    )
+    df_betas = pd.concat([df_vars, df_beta], axis=1)
+    df_betas = df_betas.swaplevel("stat", "win_type", axis=1)
+    df_betas = df_betas.sort_index(axis=1)
 
+    return df_betas
 
 
 # =============================================================================

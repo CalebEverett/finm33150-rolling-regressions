@@ -187,196 +187,72 @@ def download_s3_file(filename: str):
 # =============================================================================
 
 
-def get_betas(df_ret: pd.DataFrame, times: List, nobs_oos: int = 6) -> pd.DataFrame:
+def get_betas(
+    df_ret: pd.DataFrame, win_lengths: List, nobs_oos: int = 6
+) -> pd.DataFrame:
     """
     Takes dataframe of returns by date by ticker and returns dataframe of coefficients
     calculated from exponentially weighted moving average, boxcar and forward boxcar
-    windows. EWN averages are based on alphas as 1/t. Boxcar windows are based on 2 * t.
+    windows. EWN averages are based on alphas as 1/w. Boxcar windows are based on 2 * w.
     Forward boxcar windows are for the next `nobs_oos` observations and the same value is
     returned under each time heading to facilitate comparisons.
     """
 
-    nobs_oos = 5
     col_list = []
-    for t in tqdm(times):
+    for w in tqdm(win_lengths):
         for s in df_ret.columns[:-1]:
             df_pair = df_ret.loc[:, [s, "SPY"]]
             for win_type, df_cov in {
-                "exp_wm": df_pair.ewm(alpha=1 / t).cov(),
-                "boxcar": df_pair.rolling(window=2 * t).cov(),
+                "exp_wm": df_pair.ewm(alpha=1 / w).cov(),
+                "boxcar": df_pair.rolling(window=2 * w).cov(),
                 "boxcar_fwd": df_pair.rolling(window=nobs_oos)
                 .cov()
                 .groupby("ticker")
                 .shift(-nobs_oos),
             }.items():
                 s_var = df_cov[s].xs(s, level=1)
-                s_var.name = ("var_x", win_type, f"t_{t:02d}", s)
+                s_var.name = ("var_x", win_type, f"t_{w:02d}", s)
 
                 s_cov = df_cov[s].xs("SPY", level=1)
-                s_cov.name = ("cov_xy", win_type, f"t_{t:02d}", s)
+                s_cov.name = ("cov_xy", win_type, f"t_{w:02d}", s)
 
-                col_list.extend([s_var, s_cov])
+                s_beta = s_cov / s_var
+                s_beta.name = ("beta_1", win_type, f"t_{w:02d}", s)
 
-    df_vars = pd.concat(col_list, axis=1)
-    df_vars.columns.names = ["stat", "win_type", "time", "ticker"]
-    df_vars = df_vars.stack("ticker")
-    df_beta = df_vars["cov_xy"].divide(df_vars["var_x"])
-    df_beta.columns = pd.MultiIndex.from_tuples(
-        [("beta_1", *c) for c in df_beta.columns], names=["stat", "win_type", "time"]
-    )
-    df_betas = pd.concat([df_vars, df_beta], axis=1)
+                col_list.extend([s_beta, s_var, s_cov])
+
+    df_betas = pd.concat(col_list, axis=1)
+    df_betas.columns.names = ["stat", "win_type", "win_length", "ticker"]
+    df_betas = df_betas.stack("ticker")
+    # df_beta = df_vars["cov_xy"].divide(df_vars["var_x"])
+    # df_beta.columns = pd.MultiIndex.from_tuples(
+    #     [("beta_1", *c) for c in df_beta.columns],
+    #     names=["stat", "win_type", "win_length"],
+    # )
+    # df_betas = pd.concat([df_vars, df_beta], axis=1)
     df_betas = df_betas.swaplevel("stat", "win_type", axis=1)
     df_betas = df_betas.sort_index(axis=1)
 
     return df_betas
 
 
-# =============================================================================
-# Strategy
-# =============================================================================
-
-
-def get_accum_df(
-    df: pd.DataFrame,
-    arrival_time: str = "2018-04-08 22:05",
-    quantity=3.25e9,
-    side: int = 1,
-    participation=0.050,
-    max_trade_participation=0.10,
-    chunk_size=6.5e9,
-    price_window_ms=200,
-):
-    """Creates accumulation data frame that trades can be calculated from."""
-
-    # Create accumulation dataframe
-    df_accum = df.loc[arrival_time:].copy()
-    df_accum["CumSizeBillionths"] = df_accum.SizeBillionths.cumsum()
-
-    df_accum = df_accum[df_accum.Side == side].copy()
-
-    price_agg = {1: "max", -1: "min"}[side]
-    df_accum = (
-        df_accum.reset_index()
-        .groupby("timestamp_utc_nanoseconds")
-        .agg(
-            {
-                "CumSizeBillionths": "max",
-                "SizeBillionths": "sum",
-                "PriceMillionths": price_agg,
-                "Side": "first",
-            }
-        )
-    )
-
-    df_accum["CumChunks"] = df_accum.CumSizeBillionths.floordiv(chunk_size)
-    df_accum["CumParticipation"] = (
-        (
-            (
-                df_accum.CumChunks.map(
-                    df_accum.groupby("CumChunks").min()["CumSizeBillionths"].iloc[1:]
-                )
-                * participation
-            )
-            .fillna(0)
-            .apply(lambda x: min(x, quantity))
-        )
-        .round()
-        .astype(int)
-    )
-
-    df_accum["TradePrice"] = (
-        df_accum.PriceMillionths.sort_index(ascending=False)
-        .rolling(f"{price_window_ms}ms")
-        .agg(price_agg)
-        .sort_index()
-    )
-
-    df_accum["QualifiedTrade"] = df_accum["TradePrice"] == df_accum["PriceMillionths"]
-
-    df_accum["MaxTradeSize"] = round(
-        df_accum.SizeBillionths * max_trade_participation, 0
-    )
-
-    # Calculate trades
-    df_trades = get_trades_df(df_accum)
-    assert (
-        df_trades.StratTradeSize.sum() == quantity
-    ), "Sum of trades does not equal quantity."
-
-    # Prepare result record
-    S0 = df_accum.iloc[0].PriceMillionths
-    VWAP = round(
-        df_trades.StratTradePrice.astype(object).dot(
-            df_trades.StratTradeSize.astype(object)
-        )
-        / quantity
-    )
-    IS = VWAP / S0 - 1 if side else 1 - VWAP / S0
-
-    completion_time = df_trades.index.max()
-
-    result = dict(
-        quantity=int(quantity),
-        side=side,
-        S0=S0,
-        VWAP=VWAP,
-        IS=IS,
-        n_trades=len(df_trades),
-        mean_trade_size=int(df_trades.StratTradeSize.mean()),
-        arrival_time=df_accum.index.min(),
-        completion_time=completion_time,
-        execution_time=completion_time - df_accum.index.min(),
-        participation=participation,
-        max_trade_participation=max_trade_participation,
-        chunk_size=int(chunk_size),
-        price_window_ms=price_window_ms,
-    )
-
-    return df_accum.loc[: df_trades.index.max()], df_trades, result
-
-
-def get_trades_df(df_accum: pd.DataFrame) -> pd.DataFrame:
-    """Calculates trades from accumulation dataframe."""
-
-    trades = []
-    cum_trades = 0
-    tick_idx = 0
-    while cum_trades < df_accum.CumParticipation.max():
-        tick = df_accum.iloc[tick_idx]
-
-        if tick.CumParticipation - cum_trades > 0 and tick.QualifiedTrade:
-            trade_size = min(tick.CumParticipation - cum_trades, tick.MaxTradeSize)
-            trades.append((tick.name, trade_size, tick.TradePrice))
-            cum_trades += trade_size
-
-        tick_idx += 1
-
-    df_trades = (
-        pd.DataFrame(
-            trades,
-            columns=["timestamp_utc_nanoseconds", "StratTradeSize", "StratTradePrice"],
-        )
-        .set_index("timestamp_utc_nanoseconds")
-        .astype(int)
-    )
-
-    return df_trades
-
-
-def get_results_df(df: pd.DataFrame, params: Dict, nobs: int = 100) -> pd.DataFrame:
-    """Runs strategy for given number of observations and returns results
-    dataframe.
+def get_moments(df_betas: pd.DataFrame, start_date: str = "2016-02-01"):
+    """
+    Calculates moments for each series of betas and returns as
+    a dataframe.
     """
 
-    results = []
-    while len(results) < nobs:
-        params["arrival_time"] = np.random.choice(df.index.unique())
-        try:
-            results.append(get_accum_df(df, **params)[-1])
-        except:
-            pass
+    df_select = df_betas.swaplevel("stat", "win_type", axis=1)["beta_1"]
+    records = []
+    for s in df_select.items():
+        moments = stats.describe(s[1].loc[start_date:].dropna())
+        for stat in ["mean", "variance", "skewness", "kurtosis"]:
+            record = {"win_type": s[0][0], "win_length": s[0][1]}
+            record["stat"] = stat
+            record["stat_value"] = moments._asdict()[stat]
+            records.append(record)
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(records)
 
 
 # =============================================================================
@@ -384,6 +260,53 @@ def get_results_df(df: pd.DataFrame, params: Dict, nobs: int = 100) -> pd.DataFr
 # =============================================================================
 
 COLORS = colors.qualitative.D3
+
+
+def make_moments_chart(df_moments: pd.DataFrame) -> go.Figure:
+    """
+    Returns figure for moments comparison chart.
+    """
+    fig = px.bar(
+        df_moments,
+        x="win_length",
+        y="stat_value",
+        facet_col="stat",
+        facet_row="win_type",
+        title="Comparison of Moments",
+        height=600,
+    )
+    for col in [1, 2, 3, 4]:
+        fig.update_yaxes(matches=f"y{col}", col=col, showticklabels=True)
+
+    return fig
+
+
+def make_return_chart(df_ret: pd.DataFrame) -> go.Figure:
+    """
+    Returns average return chart figure.
+    """
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=df_ret.index,
+            y=df_ret.loc[:, df_ret.columns != "SPY"].cumsum(axis=0).mean(axis=1),
+            name="portfolio mean",
+        )
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df_ret.index,
+            y=df_ret["SPY"].cumsum(),
+            name="SPY",
+        )
+    )
+
+    fig.update_layout(title="Cumulative Return")
+
+    return fig
+
 
 IS_labels = [
     ("obs", lambda x: f"{x:>7d}"),

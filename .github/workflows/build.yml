@@ -24,7 +24,7 @@ jobs:
     - name: Run tests
       run: |
         pipenv run pytest
-    - name: Make docs
+    - name: Convert notebook
       run: |
         pipenv run jupyter nbconvert rolling_regressions.ipynb --to html --output html/index.html
     - name: Deploy html notebook to gh-pages

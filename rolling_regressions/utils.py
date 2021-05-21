@@ -328,4 +328,6 @@ def show_histograms(df_betas: pd.DataFrame) -> go.Figure:
         )
         fig.update_xaxes(range=(-2, 2))
 
+        fig.write_image(f"images/distribution_{win_length}.png", height=600, width=1200)
+
         fig.show(renderer="png", height=600, width=1200)

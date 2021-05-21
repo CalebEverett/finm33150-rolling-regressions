@@ -83,3 +83,4 @@ submissions
 *.zip
 data
 .ipynb_checkpoints
+html/*.html

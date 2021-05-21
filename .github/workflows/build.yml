@@ -24,3 +24,11 @@ jobs:
     - name: Run tests
       run: |
         pipenv run pytest
+    - name: Make docs
+      run: |
+        pipenv run jupyter nbconvert rolling_regressions.ipynb --to html --output html/index.html
+    - name: Deploy html notebook to gh-pages
+      uses: JamesIves/github-pages-deploy-action@4.1.2
+      with:
+        branch: gh-pages
+        folder: html
